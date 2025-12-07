@@ -1,0 +1,7 @@
+{
+  "name": "Cat Care Tracker",
+  "description": "Un'applicazione completa per monitorare la salute e le attività dei tuoi gatti, potenziata dall'intelligenza artificiale di Gemini.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
