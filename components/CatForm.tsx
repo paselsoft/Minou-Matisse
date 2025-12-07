@@ -25,7 +25,7 @@ export const CatForm: React.FC<CatFormProps> = ({ onSave, onCancel, initialData 
     if (!formData.name) return;
 
     onSave({
-      id: initialData?.id || crypto.randomUUID(),
+      _id: initialData?._id || crypto.randomUUID(),
       name: formData.name!,
       breed: formData.breed || 'Misto',
       age: Number(formData.age),

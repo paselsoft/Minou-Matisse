@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Cat, CareLog, LogType } from './types';
 import { CatForm } from './components/CatForm';
-import { getCatAdvice, identifyCatBreedOrIssue } from './services/geminiService';
+import { getCatAdvice } from './services/geminiService';
 import { 
   Plus, 
   Cat as CatIcon, 
@@ -16,95 +16,112 @@ import {
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 
+// Convex Imports
+import { useQuery, useMutation } from "convex/react";
+import { api } from "./convex/_generated/api";
+import { Id } from "./convex/_generated/dataModel";
+
 export default function App() {
-  const [cats, setCats] = useState<Cat[]>([]);
-  const [logs, setLogs] = useState<CareLog[]>([]);
+  // Replace local state with Convex Queries
+  const cats = useQuery(api.cats.get) || [];
   const [selectedCatId, setSelectedCatId] = useState<string | null>(null);
+  
+  // Fetch logs ONLY for the selected cat
+  const catLogs = useQuery(api.logs.getByCat, { 
+    catId: selectedCatId ? (selectedCatId as Id<"cats">) : undefined 
+  }) || [];
+
+  // Mutations
+  const addCatMutation = useMutation(api.cats.add);
+  const deleteCatMutation = useMutation(api.cats.remove);
+  const addLogMutation = useMutation(api.logs.add);
+  const updateCatWeightMutation = useMutation(api.cats.updateWeight);
+
+  // UI State
   const [showAddCat, setShowAddCat] = useState(false);
   const [aiModalOpen, setAiModalOpen] = useState(false);
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiResponse, setAiResponse] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
-  const [view, setView] = useState<'dashboard' | 'logs' | 'settings'>('dashboard');
 
-  // Load data on mount
+  // Set initial selected cat when data loads
   useEffect(() => {
-    const savedCats = localStorage.getItem('cats');
-    const savedLogs = localStorage.getItem('logs');
-    if (savedCats) {
-      const parsedCats = JSON.parse(savedCats);
-      setCats(parsedCats);
-      if (parsedCats.length > 0) setSelectedCatId(parsedCats[0].id);
+    if (cats.length > 0 && !selectedCatId) {
+      setSelectedCatId(cats[0]._id);
     }
-    if (savedLogs) setLogs(JSON.parse(savedLogs));
-  }, []);
+  }, [cats, selectedCatId]);
 
-  // Save data on change
-  useEffect(() => {
-    localStorage.setItem('cats', JSON.stringify(cats));
-    localStorage.setItem('logs', JSON.stringify(logs));
-  }, [cats, logs]);
-
-  const handleAddCat = (newCat: Cat) => {
-    setCats([...cats, newCat]);
-    setSelectedCatId(newCat.id);
+  const handleAddCat = async (newCatData: Cat) => {
+    // Convex generates the ID, so we pass the other data
+    const newId = await addCatMutation({
+      name: newCatData.name,
+      breed: newCatData.breed,
+      age: newCatData.age,
+      weight: newCatData.weight,
+      imageUrl: newCatData.imageUrl,
+      gender: newCatData.gender as string,
+    });
+    
+    setSelectedCatId(newId);
     setShowAddCat(false);
   };
 
-  const handleDeleteCat = (id: string) => {
+  const handleDeleteCat = async (id: string) => {
     if (confirm('Sei sicuro di voler eliminare questo profilo e tutti i dati associati?')) {
-      const newCats = cats.filter(c => c.id !== id);
-      setCats(newCats);
-      setLogs(logs.filter(l => l.catId !== id));
-      if (newCats.length > 0) setSelectedCatId(newCats[0].id);
+      await deleteCatMutation({ id: id as Id<"cats"> });
+      // Reset selection handled by useEffect or manually pick first available
+      const remaining = cats.filter(c => c._id !== id);
+      if (remaining.length > 0) setSelectedCatId(remaining[0]._id);
       else setSelectedCatId(null);
     }
   };
 
-  const addLog = (type: LogType, value?: string) => {
+  const addLog = async (type: LogType, value?: string) => {
     if (!selectedCatId) return;
-    const newLog: CareLog = {
-      id: crypto.randomUUID(),
-      catId: selectedCatId,
+    
+    await addLogMutation({
+      catId: selectedCatId as Id<"cats">,
       type,
       timestamp: new Date().toISOString(),
       notes: '',
       value
-    };
+    });
     
-    // If it's a weight log, update the cat's current weight
+    // If it's a weight log, update the cat's current weight in DB
     if (type === LogType.WEIGHT && value) {
-        setCats(prev => prev.map(c => 
-            c.id === selectedCatId ? { ...c, weight: Number(value) } : c
-        ));
+        await updateCatWeightMutation({
+          id: selectedCatId as Id<"cats">,
+          weight: Number(value)
+        });
     }
-
-    setLogs([newLog, ...logs]);
   };
 
   const handleAskAI = async () => {
     if (!selectedCatId || !aiPrompt.trim()) return;
-    const cat = cats.find(c => c.id === selectedCatId);
+    const cat = cats.find(c => c._id === selectedCatId);
     if (!cat) return;
 
     setAiLoading(true);
-    const catLogs = logs.filter(l => l.catId === selectedCatId);
-    const answer = await getCatAdvice(cat, catLogs, aiPrompt);
+    // Note: catLogs is already filtered by query for the selected cat
+    const answer = await getCatAdvice(cat, catLogs as CareLog[], aiPrompt);
     setAiResponse(answer);
     setAiLoading(false);
   };
 
-  const selectedCat = cats.find(c => c.id === selectedCatId);
-  const catLogs = logs.filter(l => l.catId === selectedCatId);
+  const selectedCat = cats.find(c => c._id === selectedCatId);
 
   // Prepare chart data for weight
-  const weightData = catLogs
+  const weightData = (catLogs as CareLog[])
     .filter(l => l.type === LogType.WEIGHT)
     .map(l => ({
       date: new Date(l.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
       weight: Number(l.value)
     }))
     .reverse();
+
+  if (cats === undefined) {
+    return <div className="min-h-screen flex items-center justify-center">Caricamento...</div>;
+  }
 
   if (cats.length === 0 && !showAddCat) {
     return (
@@ -113,7 +130,7 @@ export default function App() {
           <CatIcon size={48} />
         </div>
         <h1 className="text-3xl font-bold text-slate-800 mb-2">Benvenuto in Cat Care</h1>
-        <p className="text-slate-600 mb-8 max-w-md">Inizia creando un profilo per il tuo amico felino. Monitora salute, attività e ricevi consigli AI.</p>
+        <p className="text-slate-600 mb-8 max-w-md">Inizia creando un profilo per il tuo amico felino. I dati saranno salvati nel cloud!</p>
         <button 
           onClick={() => setShowAddCat(true)}
           className="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-3 rounded-xl font-semibold shadow-lg transition-all flex items-center gap-2"
@@ -139,10 +156,10 @@ export default function App() {
           <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-2 hidden lg:block">I tuoi Gatti</div>
           {cats.map(cat => (
             <button
-              key={cat.id}
-              onClick={() => setSelectedCatId(cat.id)}
+              key={cat._id}
+              onClick={() => setSelectedCatId(cat._id)}
               className={`w-full flex items-center gap-3 p-2 rounded-xl transition-all ${
-                selectedCatId === cat.id 
+                selectedCatId === cat._id 
                   ? 'bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200' 
                   : 'text-slate-600 hover:bg-slate-50'
               }`}
@@ -193,7 +210,7 @@ export default function App() {
                   Chiedi all'AI
                 </button>
                 <button 
-                  onClick={() => handleDeleteCat(selectedCat.id)}
+                  onClick={() => handleDeleteCat(selectedCat._id)}
                   className="bg-white text-red-500 px-4 py-2 rounded-lg font-medium border border-slate-200 hover:bg-red-50 transition-all"
                 >
                   <Trash2 size={18} />
@@ -253,7 +270,7 @@ export default function App() {
                       <p className="text-slate-400 text-center py-8">Nessuna attività registrata ancora.</p>
                     ) : (
                       catLogs.slice(0, 5).map(log => (
-                        <div key={log.id} className="flex items-start gap-4 p-3 rounded-lg hover:bg-slate-50 transition-colors border-b border-slate-50 last:border-0">
+                        <div key={log._id} className="flex items-start gap-4 p-3 rounded-lg hover:bg-slate-50 transition-colors border-b border-slate-50 last:border-0">
                           <div className={`p-2 rounded-lg ${
                             log.type === LogType.MEDICAL ? 'bg-red-100 text-red-600' :
                             log.type === LogType.WEIGHT ? 'bg-green-100 text-green-600' :
